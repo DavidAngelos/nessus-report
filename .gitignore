@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Environment variables
+.env
+
+# Reports (auto-generated output files)
+*_executive_summary_*.csv
+*_detailed_findings_*.csv
+*_security_assessment_*.xlsx
+*_security_report_*.html
+
+# OS-specific
+.DS_Store
+Thumbs.db
