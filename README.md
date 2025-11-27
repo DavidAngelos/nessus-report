@@ -11,6 +11,8 @@ Convert **Nessus** CSV exports into professional, customer-ready reports (CSV, E
 - **Excel** output with charts (pie: findings by risk; bar: top hosts & top vulns)
 - **HTML** report with color-coded findings table
 - Filters findings to security-relevant severities only (`Low`, `Medium`, `High`, `Critical`)
+- Optional local web UI (Flask) for uploading Nessus CSVs and downloading reports
+
 
 ## Installation
 
@@ -43,6 +45,16 @@ This script is tolerant of missing fields, but works best when these columns are
 - Name, Risk, Host, Port, Protocol
 - Synopsis, Description, Solution, CVE
 - CVSS v3.0 Base Score, CVSS v2.0 Base Score
+
+### Optional: Web UI
+
+You can also run a simple local web interface to upload Nessus CSVs and download reports:
+
+```bash
+python web_app.py
+```
+
+Then open `http://localhost:5000` in your browser.
 
 ## Notes
 
