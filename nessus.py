@@ -13,6 +13,7 @@ import re
 from openpyxl import load_workbook
 from openpyxl.chart import PieChart, BarChart, Reference
 from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
 
 class NessusReportGenerator:
     def __init__(self, csv_file):
@@ -77,11 +78,22 @@ class NessusReportGenerator:
         text_columns = ['Name', 'Synopsis', 'Description', 'Solution', 'CVE']
         for col in text_columns:
             if col in self.df.columns:
-                self.df[col] = self.df[col].astype(str).str.strip().str.replace('"', '')
+                self.df[col] = (
+                    self.df[col]
+                    .astype(str)
+                    .str.strip()
+                    .str.replace('"', '')
+                )
         
         # Clean up Risk field
         if 'Risk' in self.df.columns:
             self.df['Risk'] = self.df['Risk'].astype(str).str.strip()
+
+            # ✅ Keep only Low, Medium, High, Critical
+            valid_risks = ['Low', 'Medium', 'High', 'Critical']
+            before_count = len(self.df)
+            self.df = self.df[self.df['Risk'].isin(valid_risks)]
+            print(f"Filtered by severity: {before_count} → {len(self.df)} relevant issues")
         
         # Clean up CVSS scores
         for col in ['CVSS v2.0 Base Score', 'CVSS v3.0 Base Score']:
@@ -97,12 +109,16 @@ class NessusReportGenerator:
         # Create a combined CVSS score column for sorting
         self.df['CVSS_Score'] = None
         if 'CVSS v3.0 Base Score' in self.df.columns:
-            self.df['CVSS_Score'] = pd.to_numeric(self.df['CVSS v3.0 Base Score'], errors='coerce')
+            self.df['CVSS_Score'] = pd.to_numeric(self.df['CVSS v3.0 Base Score'],
+                                                errors='coerce')
         
         # Fall back to CVSS v2.0 if v3.0 is not available
         if 'CVSS v2.0 Base Score' in self.df.columns:
             mask = self.df['CVSS_Score'].isna()
-            self.df.loc[mask, 'CVSS_Score'] = pd.to_numeric(self.df.loc[mask, 'CVSS v2.0 Base Score'], errors='coerce')
+            self.df.loc[mask, 'CVSS_Score'] = pd.to_numeric(
+                self.df.loc[mask, 'CVSS v2.0 Base Score'],
+                errors='coerce'
+            )
     
     def generate_summary(self):
         """Generate summary statistics"""
@@ -166,7 +182,7 @@ class NessusReportGenerator:
             summary_data.append(['CVSS Metrics', ''])
             summary_data.append(['Average CVSS Score', self.summary_stats.get('avg_cvss', 'N/A')])
             summary_data.append(['Highest CVSS Score', self.summary_stats.get('max_cvss', 'N/A')])
-            summary_data.append(['High Risk Findings (CVSS â‰¥ 7.0)', self.summary_stats.get('high_cvss_count', 'N/A')])
+            summary_data.append(['High Risk Findings (CVSS ≥ 7.0)', self.summary_stats.get('high_cvss_count', 'N/A')])
         
         # Risk Distribution
         if 'by_severity' in self.summary_stats:
@@ -193,11 +209,12 @@ class NessusReportGenerator:
         detailed_df = self.create_detailed_report()
 
         def color_row(row):
+            # Color mapping (your requested colors)
             color_map = {
-                "Critical": "#8e44ad",  # Purple
-                "High": "#e74c3c",      # Red
-                "Medium": "#f39c12",    # Orange
-                "Low": "#27ae60"        # Green
+                "Critical": "8B0000",   # deep red
+                "High": "C00000",       # red
+                "Medium": "E46C0A",     # orange
+                "Low": "9BBB59",        # green
             }
             bg = color_map.get(row['Risk'], "")
             return f'background-color: {bg}; color: white;' if bg else ''
@@ -333,75 +350,139 @@ class NessusReportGenerator:
 
         # Step 1: Create Excel file with pandas
         with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+            # Executive Summary
             summary_df = self.create_executive_summary()
             summary_df.to_excel(writer, sheet_name='Executive Summary', index=False)
 
+            # Host Summary
             host_summary_df = self.create_host_summary()
             if not host_summary_df.empty:
                 host_summary_df.to_excel(writer, sheet_name='Host Summary', index=False)
 
+            # Detailed Findings
             detailed_df = self.create_detailed_report()
             detailed_df.to_excel(writer, sheet_name='Security Findings', index=False)
 
-            info_findings = self.df[self.df['Risk'] == 'None']
+            # Informational findings (probably empty now if you filter by Risk)
+            info_findings = pd.DataFrame()
+            if 'Risk' in self.df.columns:
+                info_findings = self.df[self.df['Risk'] == 'None']
+
             if not info_findings.empty:
                 info_columns = ['Host', 'Port', 'Protocol', 'Name', 'Synopsis']
                 available_info_cols = [col for col in info_columns if col in info_findings.columns]
-                info_findings[available_info_cols].to_excel(writer, sheet_name='Informational', index=False)
+                info_findings[available_info_cols].to_excel(
+                    writer, sheet_name='Informational', index=False
+                )
 
         # Step 2: Reopen with openpyxl and add charts
-        from openpyxl import load_workbook
-        from openpyxl.chart import PieChart, BarChart, Reference
-        from openpyxl.chart.label import DataLabelList
-
         wb = load_workbook(excel_file)
         chart_ws = wb.create_sheet("Charts")
 
-        # Pie chart: Risk level distribution
+        # -------------------------------------------------
+        # 1. Pie chart – Findings by Risk (dynamic & colored)
+        # -------------------------------------------------
+        by_severity = self.summary_stats.get("by_severity", {})
+
         chart_ws.append(["Risk", "Count"])
-        for risk, count in self.summary_stats.get("by_severity", {}).items():
-            chart_ws.append([risk, count])
 
-        pie = PieChart()
-        pie.title = "Findings by Risk"
-        data = Reference(chart_ws, min_col=2, min_row=1, max_row=5)
-        labels = Reference(chart_ws, min_col=1, min_row=2, max_row=5)
-        pie.add_data(data, titles_from_data=True)
-        pie.set_categories(labels)
-        pie.dataLabels = DataLabelList()
-        pie.dataLabels.showVal = True
-        chart_ws.add_chart(pie, "E2")
+        severity_order = ["Critical", "High", "Medium", "Low"]
+        severities_present = []
+        for sev in severity_order:
+            count = by_severity.get(sev, 0)
+            if count:
+                chart_ws.append([sev, count])
+                severities_present.append(sev)
 
-        # Bar chart: Top hosts
-        start_row = len(chart_ws["A"]) + 3
-        chart_ws.append([])
-        chart_ws.append(["Host", "Findings"])
-        for host, count in self.summary_stats.get("most_affected_hosts", {}).items():
-            chart_ws.append([host, count])
+        if severities_present:
+            last_row = chart_ws.max_row
 
-        bar1 = BarChart()
-        bar1.title = "Top 5 Most Affected Hosts"
-        data = Reference(chart_ws, min_col=2, min_row=start_row+1, max_row=start_row+5)
-        labels = Reference(chart_ws, min_col=1, min_row=start_row+2, max_row=start_row+6)
-        bar1.add_data(data, titles_from_data=True)
-        bar1.set_categories(labels)
-        chart_ws.add_chart(bar1, f"E{start_row + 1}")
+            pie = PieChart()
+            pie.title = "Findings by Risk"
 
-        # Bar chart: Top vulnerabilities
-        start_row2 = len(chart_ws["A"]) + 3
-        chart_ws.append([])
-        chart_ws.append(["Vulnerability", "Count"])
-        for vuln, count in self.summary_stats.get("top_vulnerabilities", {}).items():
-            label = vuln[:30] + '...' if len(vuln) > 30 else vuln
-            chart_ws.append([label, count])
+            data = Reference(chart_ws, min_col=2, min_row=1, max_row=last_row)
+            labels = Reference(chart_ws, min_col=1, min_row=2, max_row=last_row)
 
-        bar2 = BarChart()
-        bar2.title = "Top 5 Vulnerabilities"
-        data = Reference(chart_ws, min_col=2, min_row=start_row2+1, max_row=start_row2+5)
-        labels = Reference(chart_ws, min_col=1, min_row=start_row2+2, max_row=start_row2+6)
-        bar2.add_data(data, titles_from_data=True)
-        bar2.set_categories(labels)
-        chart_ws.add_chart(bar2, f"E{start_row2 + 1}")
+            pie.add_data(data, titles_from_data=True)
+            pie.set_categories(labels)
+            pie.dataLabels = DataLabelList()
+            pie.dataLabels.showVal = True
+
+            # ✔ Correct severity colors
+            color_map = {
+                "Critical": "8B0000",   # deep red
+                "High": "C00000",       # red
+                "Medium": "E46C0A",     # orange
+                "Low": "9BBB59",        # green
+            }
+
+            series = pie.series[0]
+            series.data_points = []
+            for idx, sev in enumerate(severities_present):
+                dp = DataPoint(idx=idx)
+                dp.graphicalProperties.solidFill = color_map.get(sev, "808080")
+                series.data_points.append(dp)
+
+            chart_ws.add_chart(pie, "E2")
+
+        # -------------------------------------------------
+        # 2. Bar chart – Top affected hosts (max 5)
+        # -------------------------------------------------
+        most_hosts_dict = self.summary_stats.get("most_affected_hosts", {})
+        host_items = list(most_hosts_dict.items())[:5]  # only top 5
+
+        if host_items:
+            chart_ws.append([])  # blank spacer row
+
+            chart_ws.append(["Host", "Findings"])
+            header_row = chart_ws.max_row
+
+            for host, count in host_items:
+                chart_ws.append([host, count])
+
+            last_row = chart_ws.max_row
+
+            bar1 = BarChart()
+            bar1.title = "Top Affected Hosts"
+            bar1.y_axis.title = "Findings"
+
+            data = Reference(chart_ws, min_col=2, min_row=header_row, max_row=last_row)
+            labels = Reference(chart_ws, min_col=1, min_row=header_row + 1, max_row=last_row)
+
+            bar1.add_data(data, titles_from_data=True)
+            bar1.set_categories(labels)
+
+            chart_ws.add_chart(bar1, f"E{header_row}")
+
+        # -------------------------------------------------
+        # 3. Bar chart – Top vulnerabilities (max 5)
+        # -------------------------------------------------
+        top_vulns_dict = self.summary_stats.get("top_vulnerabilities", {})
+        vuln_items = list(top_vulns_dict.items())[:5]  # only top 5
+
+        if vuln_items:
+            chart_ws.append([])  # blank spacer row
+
+            chart_ws.append(["Vulnerability", "Count"])
+            header_row = chart_ws.max_row
+
+            for vuln, count in vuln_items:
+                label = vuln[:30] + "..." if len(vuln) > 30 else vuln
+                chart_ws.append([label, count])
+
+            last_row = chart_ws.max_row
+
+            bar2 = BarChart()
+            bar2.title = "Top Vulnerabilities"
+            bar2.y_axis.title = "Occurrences"
+
+            data = Reference(chart_ws, min_col=2, min_row=header_row, max_row=last_row)
+            labels = Reference(chart_ws, min_col=1, min_row=header_row + 1, max_row=last_row)
+
+            bar2.add_data(data, titles_from_data=True)
+            bar2.set_categories(labels)
+
+            chart_ws.add_chart(bar2, f"E{header_row}")
 
         wb.save(excel_file)
         print(f"Excel report exported to: {excel_file}")
