@@ -14,6 +14,9 @@ from openpyxl import load_workbook
 from openpyxl.chart import PieChart, BarChart, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.series import DataPoint
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font
 
 class NessusReportGenerator:
     def __init__(self, csv_file):
@@ -211,10 +214,10 @@ class NessusReportGenerator:
         def color_row(row):
             # Color mapping (your requested colors)
             color_map = {
-                "Critical": "8B0000",   # deep red
-                "High": "C00000",       # red
-                "Medium": "E46C0A",     # orange
-                "Low": "9BBB59",        # green
+                "Critical": "A43C3C",
+                "High": "D97A5B",
+                "Medium": "E5B66C",
+                "Low": "9FBF8F",
             }
             bg = color_map.get(row['Risk'], "")
             return f'background-color: {bg}; color: white;' if bg else ''
@@ -344,13 +347,13 @@ class NessusReportGenerator:
         return summary_file, detailed_file
     
     def export_to_excel(self, output_prefix):
-        """Export reports to Excel with multiple sheets and charts"""
+        """Export reports to Excel with multiple sheets, tables, and charts"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         excel_file = f"{output_prefix}_security_assessment_{timestamp}.xlsx"
 
         # Step 1: Create Excel file with pandas
         with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-            # Executive Summary
+            # Executive Summary (we'll overwrite layout later)
             summary_df = self.create_executive_summary()
             summary_df.to_excel(writer, sheet_name='Executive Summary', index=False)
 
@@ -363,7 +366,7 @@ class NessusReportGenerator:
             detailed_df = self.create_detailed_report()
             detailed_df.to_excel(writer, sheet_name='Security Findings', index=False)
 
-            # Informational findings (probably empty now if you filter by Risk)
+            # Informational (if any)
             info_findings = pd.DataFrame()
             if 'Risk' in self.df.columns:
                 info_findings = self.df[self.df['Risk'] == 'None']
@@ -375,15 +378,121 @@ class NessusReportGenerator:
                     writer, sheet_name='Informational', index=False
                 )
 
-        # Step 2: Reopen with openpyxl and add charts
+        # Step 2: Reopen with openpyxl
         wb = load_workbook(excel_file)
+
+        # ---------- Helper: add an Excel Table to a whole sheet ----------
+        def add_table(ws, table_name):
+            # Need at least header + one data row
+            if ws.max_row < 2 or ws.max_column < 1:
+                return
+
+            # Fix any accidental "Column1" header
+            for cell in ws[1]:
+                if cell.value == "Column1":
+                    cell.value = " "
+
+            last_col_letter = get_column_letter(ws.max_column)
+            ref = f"A1:{last_col_letter}{ws.max_row}"
+
+            table = Table(displayName=table_name, ref=ref)
+            style = TableStyleInfo(
+                name="TableStyleMedium1",   # white theme
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            table.tableStyleInfo = style
+            ws.add_table(table)
+
+            # Make header row text white (since header band is dark)
+            for cell in ws[1]:
+                cell.font = Font(color="FFFFFFFF", bold=True)
+
+        # ---------- Rebuild Executive Summary as 4 simple blocks (no tables) ----------
+        if 'Executive Summary' in wb.sheetnames:
+            ws = wb['Executive Summary']
+            ws.delete_rows(1, ws.max_row)  # clear existing
+
+            stats = self.summary_stats
+
+            # 1. Assessment Overview
+            overview_rows = [
+                ("Total Hosts Scanned", stats.get('total_hosts', 'N/A')),
+                ("Hosts with Security Issues", stats.get('hosts_with_issues', 'N/A')),
+                ("Total Findings", stats.get('total_findings', 'N/A')),
+                ("Security-Relevant Findings", stats.get('security_findings', 'N/A')),
+            ]
+
+            # 2. CVSS Metrics
+            cvss_rows = [
+                ("Average CVSS Score", stats.get('avg_cvss', 'N/A')),
+                ("Highest CVSS Score", stats.get('max_cvss', 'N/A')),
+                ("High Risk Findings (CVSS ≥ 7.0)", stats.get('high_cvss_count', 'N/A')),
+            ]
+
+            # 3. Risk Level Distribution
+            risk_rows = []
+            by_sev = stats.get('by_severity', {})
+            for label in ['Critical', 'High', 'Medium', 'Low']:
+                count = by_sev.get(label, 0)
+                if count:
+                    risk_rows.append((f"{label} Risk", count))
+
+            # 4. Most Common Vulnerabilities (top 5)
+            vuln_rows = []
+            top_vulns = stats.get('top_vulnerabilities', {})
+            for vuln, count in list(top_vulns.items())[:5]:
+                name = vuln[:80] + "..." if len(vuln) > 80 else vuln
+                vuln_rows.append((name, count))
+
+            def write_block(start_row, title, rows):
+                """Write a simple 2-column block starting at start_row. Returns next free row."""
+                if not rows:
+                    return start_row
+                # Title row
+                ws.cell(row=start_row, column=1, value=title)
+                ws.cell(row=start_row, column=1).font = Font(bold=True)
+                start_row += 1
+                # Data rows
+                for label, value in rows:
+                    ws.cell(row=start_row, column=1, value=label)
+                    ws.cell(row=start_row, column=2, value=value)
+                    start_row += 1
+                # Blank row after block
+                return start_row + 1
+
+            row = 1
+            row = write_block(row, "Assessment Overview", overview_rows)
+            row = write_block(row, "CVSS Metrics", cvss_rows)
+            row = write_block(row, "Risk Level Distribution", risk_rows)
+            row = write_block(row, "Most Common Vulnerabilities", vuln_rows)
+
+            # Autosize first two columns
+            for col in range(1, 3):
+                max_len = 0
+                col_letter = get_column_letter(col)
+                for cell in ws[col_letter]:
+                    if cell.value:
+                        max_len = max(max_len, len(str(cell.value)))
+                ws.column_dimensions[col_letter].width = max_len + 2
+
+        # ---------- Add tables only to data sheets ----------
+        if 'Host Summary' in wb.sheetnames:
+            add_table(wb['Host Summary'], "TblHostSummary")
+
+        if 'Security Findings' in wb.sheetnames:
+            add_table(wb['Security Findings'], "TblSecurityFindings")
+
+        if 'Informational' in wb.sheetnames:
+            add_table(wb['Informational'], "TblInformational")
+
+        # ---------- Charts sheet ----------
         chart_ws = wb.create_sheet("Charts")
 
-        # -------------------------------------------------
-        # 1. Pie chart – Findings by Risk (dynamic & colored)
-        # -------------------------------------------------
+        # 1. Pie chart – Findings by Risk (muted colors)
         by_severity = self.summary_stats.get("by_severity", {})
-
         chart_ws.append(["Risk", "Count"])
 
         severity_order = ["Critical", "High", "Medium", "Low"]
@@ -396,7 +505,6 @@ class NessusReportGenerator:
 
         if severities_present:
             last_row = chart_ws.max_row
-
             pie = PieChart()
             pie.title = "Findings by Risk"
 
@@ -408,12 +516,12 @@ class NessusReportGenerator:
             pie.dataLabels = DataLabelList()
             pie.dataLabels.showVal = True
 
-            # ✔ Correct severity colors
+            # Muted severity colors
             color_map = {
-                "Critical": "8B0000",   # deep red
-                "High": "C00000",       # red
-                "Medium": "E46C0A",     # orange
-                "Low": "9BBB59",        # green
+                "Critical": "A43C3C",  # darker red
+                "High": "D97A5B",      # soft red/orange
+                "Medium": "E5B66C",    # amber
+                "Low": "9FBF8F",       # soft green
             }
 
             series = pie.series[0]
@@ -425,15 +533,12 @@ class NessusReportGenerator:
 
             chart_ws.add_chart(pie, "E2")
 
-        # -------------------------------------------------
         # 2. Bar chart – Top affected hosts (max 5)
-        # -------------------------------------------------
         most_hosts_dict = self.summary_stats.get("most_affected_hosts", {})
-        host_items = list(most_hosts_dict.items())[:5]  # only top 5
+        host_items = list(most_hosts_dict.items())[:5]
 
         if host_items:
-            chart_ws.append([])  # blank spacer row
-
+            chart_ws.append([])
             chart_ws.append(["Host", "Findings"])
             header_row = chart_ws.max_row
 
@@ -451,18 +556,14 @@ class NessusReportGenerator:
 
             bar1.add_data(data, titles_from_data=True)
             bar1.set_categories(labels)
-
             chart_ws.add_chart(bar1, f"E{header_row}")
 
-        # -------------------------------------------------
         # 3. Bar chart – Top vulnerabilities (max 5)
-        # -------------------------------------------------
         top_vulns_dict = self.summary_stats.get("top_vulnerabilities", {})
-        vuln_items = list(top_vulns_dict.items())[:5]  # only top 5
+        vuln_items = list(top_vulns_dict.items())[:5]
 
         if vuln_items:
-            chart_ws.append([])  # blank spacer row
-
+            chart_ws.append([])
             chart_ws.append(["Vulnerability", "Count"])
             header_row = chart_ws.max_row
 
@@ -481,7 +582,6 @@ class NessusReportGenerator:
 
             bar2.add_data(data, titles_from_data=True)
             bar2.set_categories(labels)
-
             chart_ws.add_chart(bar2, f"E{header_row}")
 
         wb.save(excel_file)
