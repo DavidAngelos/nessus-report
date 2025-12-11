@@ -660,41 +660,77 @@ class NessusReportGenerator:
         print(f"HTML report exported to: {html_file}")
         return html_file
 
-def main():
-    parser = argparse.ArgumentParser(description='Convert Nessus CSV exports to customer-ready reports')
-    parser.add_argument('csv_file', help='Path to the Nessus CSV file')
-    parser.add_argument('-o', '--output', default='security_report', help='Output file prefix (default: security_report)')
-    parser.add_argument('-f', '--format', choices=['csv', 'excel', 'html', 'all'], default='all', 
-                        help='Output format (default: all)')
-    
-    args = parser.parse_args()
-    
-    # Check if input file exists
-    if not Path(args.csv_file).exists():
-        print(f"Error: Input file '{args.csv_file}' not found")
-        sys.exit(1)
-    
-    # Create report generator
-    generator = NessusReportGenerator(args.csv_file)
-    
-    # Load and process data
+def process_single_file(csv_path: Path, output_prefix: str, out_format: str) -> None:
+    print(f"\n=== Processing: {csv_path} ===")
+
+    generator = NessusReportGenerator(str(csv_path))
     if not generator.load_data():
-        sys.exit(1)
-    
+        print(f"[!] Failed to load CSV, skipping: {csv_path}")
+        return
+
     generator.clean_data()
     generator.generate_summary()
-    
-    # Export based on format choice
-    if args.format in ['csv', 'all']:
-        generator.export_to_csv(args.output)
-    
-    if args.format in ['excel', 'all']:
-        generator.export_to_excel(args.output)
-    
-    if args.format in ['html', 'all']:
-        generator.export_to_html(args.output)
-    
-    print("\nReport generation completed successfully!")
+
+    if out_format in ("all", "csv"):
+        generator.export_to_csv(output_prefix)
+
+    if out_format in ("all", "excel"):
+        generator.export_to_excel(output_prefix)
+
+    if out_format in ("all", "html"):
+        generator.export_to_html(output_prefix)
+
+    print(f"[+] Finished: {csv_path} → prefix '{output_prefix}'")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate customer-friendly reports from one or more Nessus CSV exports."
+    )
+    parser.add_argument(
+        "inputs",
+        nargs="+",
+        help="One or more Nessus CSV export files",
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default=None,
+        help="Base output prefix. For multiple files, the CSV filename stem will be appended.",
+    )
+    parser.add_argument(
+        "-f", "--format",
+        choices=["all", "csv", "excel", "html"],
+        default="all",
+        help="Output format (default: all)",
+    )
+
+    args = parser.parse_args()
+    csv_files = [Path(p) for p in args.inputs]
+
+    # Single file → legacy behavior
+    if len(csv_files) == 1:
+        csv_path = csv_files[0]
+        if not csv_path.exists():
+            print(f"[!] File not found: {csv_path}")
+            return
+
+        prefix = args.output or csv_path.stem
+        process_single_file(csv_path, prefix, args.format)
+        return
+
+    # Multiple files → each CSV treated as a separate project
+    base_prefix = args.output.strip() if args.output else ""
+
+    for csv_path in csv_files:
+        if not csv_path.exists():
+            print(f"[!] File not found, skipping: {csv_path}")
+            continue
+
+        # Prefix logic:
+        # - If user gave -o:   userprefix_filename
+        # - If no -o:          filename
+        prefix = f"{base_prefix}_{csv_path.stem}" if base_prefix else csv_path.stem
+
+        process_single_file(csv_path, prefix, args.format)
 
 if __name__ == "__main__":
     main()

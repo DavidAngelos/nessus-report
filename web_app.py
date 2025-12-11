@@ -15,6 +15,8 @@ from flask import (
     flash,
 )
 
+from werkzeug.utils import secure_filename
+
 from nessus import NessusReportGenerator  # <-- import your existing class
 
 app = Flask(__name__)
@@ -155,6 +157,27 @@ INDEX_HTML = """
             color: var(--muted);
         }
 
+        .dropzone.dragover {
+            background: #181d24;
+            border-color: var(--border-strong);
+        }
+
+        .file-list {
+            margin-top: 10px;
+            font-size: 0.78rem;
+            color: var(--muted);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .file-pill {
+            background: var(--bg-card);
+            border: 1px solid var(--border-soft);
+            border-radius: 999px;
+            padding: 3px 8px;
+        }
+
         input[type="file"] {
             display: none;
         }
@@ -279,13 +302,15 @@ INDEX_HTML = """
                     </div>
                     <div class="dropzone-main">
                         <div class="dropzone-title" id="file-label">
-                            Drop your Nessus CSV here or click to browse
+                            Drop one or more Nessus CSVs here or click to browse
                         </div>
-                        <div class="dropzone-subtitle">Nessus CSV export only. Processing is local.</div>
+                        <div class="dropzone-subtitle">
+                            Nessus CSV exports only. Processing is local.
+                        </div>
+                        <div class="file-list" id="file-list"></div>
                     </div>
-                    <input type="file" id="csv-file" name="csv_file" accept=".csv" required>
+                    <input type="file" id="csv-file" name="csv_file" accept=".csv" multiple required>
                 </label>
-
                 <div class="side-panel">
                     <div class="side-title">Output formats</div>
                     <div class="side-subtitle">
@@ -321,14 +346,62 @@ INDEX_HTML = """
 </div>
 
 <script>
-    const fileInput = document.getElementById('csv-file');
-    const fileLabel = document.getElementById('file-label');
+    const fileInput  = document.getElementById('csv-file');
+    const fileLabel  = document.getElementById('file-label');
+    const fileListEl = document.getElementById('file-list');
+    const dropzone   = document.querySelector('.dropzone');
+
+    function updateFileList(files) {
+        fileListEl.innerHTML = '';
+
+        if (!files || files.length === 0) {
+            fileLabel.textContent = "Drop one or more Nessus CSVs here or click to browse";
+            return;
+        }
+
+        // Keep label generic, show details in pills
+        if (files.length === 1) {
+            fileLabel.textContent = "1 file selected";
+        } else {
+            fileLabel.textContent = files.length + " files selected";
+        }
+
+        Array.from(files).forEach(f => {
+            const pill = document.createElement('span');
+            pill.className = 'file-pill';
+            pill.textContent = f.name;
+            fileListEl.appendChild(pill);
+        });
+    }
 
     fileInput.addEventListener('change', () => {
-        fileLabel.textContent =
-            fileInput.files.length > 0
-                ? fileInput.files[0].name
-                : "Drop your Nessus CSV here or click to browse";
+        updateFileList(fileInput.files);
+    });
+
+    // Drag & drop handling
+    ['dragenter', 'dragover'].forEach(evtName => {
+        dropzone.addEventListener(evtName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.add('dragover');
+        });
+    });
+
+    ['dragleave', 'dragend', 'drop'].forEach(evtName => {
+        dropzone.addEventListener(evtName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.remove('dragover');
+        });
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+
+        // Assign dropped files to the hidden input
+        fileInput.files = files;
+        updateFileList(files);
     });
 </script>
 
@@ -344,9 +417,12 @@ def index():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    file = request.files.get("csv_file")
-    if not file or file.filename == "":
-        flash("Please upload a Nessus CSV file.", "error")
+    files = request.files.getlist("csv_file")
+
+    # Validate file list
+    files = [f for f in files if f and f.filename]
+    if not files:
+        flash("Please upload at least one Nessus CSV file.", "error")
         return redirect(url_for("index"))
 
     # Check which formats are requested
@@ -360,48 +436,58 @@ def generate():
 
     # Temp directory for this request
     temp_dir = tempfile.mkdtemp(prefix="nessus_report_")
-    csv_path = os.path.join(temp_dir, file.filename)
-    file.save(csv_path)
-
-    # Run your existing generator
-    generator = NessusReportGenerator(csv_path)
-    if not generator.load_data():
-        flash("Failed to load CSV. Check that this is a Nessus CSV export.", "error")
-        return redirect(url_for("index"))
-
-    generator.clean_data()
-    generator.generate_summary()
-
-    # Output prefix in the temp dir
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_prefix = os.path.join(temp_dir, f"report_{timestamp}")
 
     generated_files = []
 
-    if want_csv:
-        summary_file, detailed_file = generator.export_to_csv(output_prefix)
-        generated_files.extend([summary_file, detailed_file])
+    for file in files:
+        safe_name = secure_filename(file.filename)
+        if not safe_name.lower().endswith(".csv"):
+            flash(f"Skipping non-CSV file: {file.filename}", "error")
+            continue
 
-    if want_excel:
-        excel_file = generator.export_to_excel(output_prefix)
-        generated_files.append(excel_file)
+        csv_path = os.path.join(temp_dir, safe_name)
+        file.save(csv_path)
 
-    if want_html:
-        html_file = generator.export_to_html(output_prefix)
-        generated_files.append(html_file)
+        generator = NessusReportGenerator(csv_path)
+        if not generator.load_data():
+            flash(f"Failed to load CSV: {file.filename}", "error")
+            continue
 
-    # If only one file, send it directly
+        generator.clean_data()
+        generator.generate_summary()
+
+        # Use original filename stem as part of output prefix
+        stem = Path(safe_name).stem
+        output_prefix = os.path.join(temp_dir, f"{stem}_{timestamp}")
+
+        if want_csv:
+            summary_file, detailed_file = generator.export_to_csv(output_prefix)
+            generated_files.extend([summary_file, detailed_file])
+
+        if want_excel:
+            excel_file = generator.export_to_excel(output_prefix)
+            generated_files.append(excel_file)
+
+        if want_html:
+            html_file = generator.export_to_html(output_prefix)
+            generated_files.append(html_file)
+
+    if not generated_files:
+        flash("No reports were generated. Check input files and formats.", "error")
+        return redirect(url_for("index"))
+
+    # If only one file produced, send it directly
     if len(generated_files) == 1:
         return send_file(generated_files[0], as_attachment=True)
 
-    # Otherwise, zip them up
-    zip_path = os.path.join(temp_dir, "nessus_report_bundle.zip")
+    # Otherwise, zip all outputs
+    zip_path = os.path.join(temp_dir, f"nessus_reports_{timestamp}.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in generated_files:
             zf.write(path, arcname=os.path.basename(path))
 
     return send_file(zip_path, as_attachment=True)
-
 
 if __name__ == "__main__":
     # Run the app locally
