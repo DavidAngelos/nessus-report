@@ -1,18 +1,14 @@
-# Nessus CSV Report Generator
+# Nessus CSV Report Generator/Merger
 
-Convert **Nessus** CSV exports into professional, customer-ready reports (CSV, Excel with charts, and HTML).
+This project provides a simple way to transform Nessus scan outputs into clear, customer-friendly reports, as well as merge multiple Nessus scans into a single export.
 
 ## Features
 
-- Cleans & standardizes Nessus CSV data (encoding fallback, column trimming, text cleanup)
-- Filters common informational plugin noise
-- Severity & CVSS aggregation with unified `CVSS_Score` (v3 preferred, v2 fallback)
-- Executive summary, host summary, and detailed findings
-- **Excel** output with charts (pie: findings by risk; bar: top hosts & top vulns)
-- **HTML** report with color-coded findings table
-- Filters findings to security-relevant severities only (`Low`, `Medium`, `High`, `Critical`)
-- Optional local web UI (Flask) for uploading Nessus CSVs and downloading reports
-
+- Produces Executive Summary and Detailed Findings views
+- Supports CSV, Excel (XLSX), and HTML outputs
+- Handles multiple CSV inputs (each CSV is treated as a separate project)
+- Includes a utility to merge multiple Nessus .nessus files into one
+- Provides a simple web interface for reporting and .nessus merging
 
 ## Installation
 
@@ -22,31 +18,54 @@ pip install -r requirements.txt
 ```
 
 ## Usage
-```bash
-# All formats (default)
-python3 nessus.py path/to/nessus.csv
 
-# Specify output prefix and format
-python3 nessus.py path/to/nessus.csv -o acme_q3 -f excel
-python3 nessus.py path/to/nessus.csv -o acme_q3 -f html
-python3 nessus.py path/to/nessus.csv -o acme_q3 -f csv
+The tool can be used either from the command line or through the web interface.
+
+#### Command-line usage (CSV reports)
+
+Generate reports from a single Nessus CSV file:
+```bash
+python3 nessus.py path/to/nessus.csv
 ```
 
-Outputs are timestamped, e.g.:
+Generate reports from multiple CSV files (each CSV produces its own outputs):
+```bash
+python3 nessus.py scan1.csv scan2.csv scan3.csv
+```
 
-- acme_q3_executive_summary_YYYYMMDD_HHMMSS.csv
-- acme_q3_detailed_findings_YYYYMMDD_HHMMSS.csv
-- acme_q3_security_assessment_YYYYMMDD_HHMMSS.xlsx
-- acme_q3_security_report_YYYYMMDD_HHMMSS.html
+Use a custom output prefix:
+```bash
+python3 nessus.py scan.csv -o customer_name
+```
 
-## Input CSV expectations
+Limit the output format(Available formats: csv, excel, html, all):
+```bash
+python3 nessus.py scan.csv -f excel
+```
 
-This script is tolerant of missing fields, but works best when these columns are present (as in standard Nessus CSVs):
-- Name, Risk, Host, Port, Protocol
-- Synopsis, Description, Solution, CVE
-- CVSS v3.0 Base Score, CVSS v2.0 Base Score
+#### Command-line usage (.nessus merge)
 
-### Optional: Web UI
+Merge multiple Nessus .nessus files into a single combined report:
+```bash
+python3 nessus_merger.py scan1.nessus scan2.nessus -o merged_report.nessus
+```
+
+Optionally set a custom report name inside the merged file:
+```bash
+python3 nessus_merger.py scan1.nessus scan2.nessus -o merged_report.nessus --name "Merged Report"
+```
+
+#### Web Interface (Optional)
+
+The web interface provides two separate workflows:
+
+- CSV → Reports
+Upload one or more Nessus CSV files and generate reports in CSV, Excel, or HTML format.
+
+- Merge .nessus
+Upload multiple .nessus files and download a single merged .nessus export.
+
+All processing is performed locally on the server running the application.
 
 You can also run a simple local web interface to upload Nessus CSVs and download reports:
 
@@ -56,9 +75,13 @@ python web_app.py
 
 Then open `http://localhost:5000` in your browser.
 
+## Input CSV expectations
+
+This script is tolerant of missing fields, but works best when these columns are present (as in standard Nessus CSVs):
+- Name, Risk, Host, Port, Protocol
+- Synopsis, Description, Solution, CVE
+- CVSS v3.0 Base Score, CVSS v2.0 Base Score
+
 ## Notes
 
-- Only `Low`, `Medium`, `High`, and `Critical` severities are included in the main statistics and detailed findings.  
-- If present, purely informational items (`Risk == "None"` or similar) are ignored in the customer-facing outputs.
-- Severity order: Critical > High > Medium > Low > None.
-- CVSS metrics prefer v3; v2 is used when v3 is missing.
+- Informational findings are filtered out by default. Only Low, Medium, High, and Critical severities are included in reports
